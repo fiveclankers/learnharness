@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { createModels, type OAuthCredential, type ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-copilot";
 import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
+import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "lh-web-sub-"));
 process.env.LH_AUTH_FILE = path.join(directory, "auth.json");
@@ -20,17 +21,27 @@ const { subscriptionControlsResponse, subscriptionBrowserResponse } = await impo
 const chat = await import("../src/agent/chatgpt-bridge.ts");
 const native = await import("../src/agent/subscription-bridge.ts");
 const { piModels } = await import("../src/agent/models.ts");
-const { refreshConnectionCatalog } = await import("../src/server/model-catalog.ts");
+const { chatGPTSupportedModels, modelCatalog, refreshConnectionCatalog } = await import("../src/server/model-catalog.ts");
 const model = piModels().getModels("openai").find((entry) => entry.api === "openai-responses")!;
+let extraChatGPTModels: { slug: string; display_name: string; visibility: string }[] = [];
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input) => {
 	assert.equal(String(input), "https://api.openai.com/v1/models", "unexpected network request forbidden");
-	return Response.json({ models: [{ slug: model.id, display_name: "Fixture ChatGPT", visibility: "list" }] });
+	return Response.json({
+		models: [
+			{ slug: model.id, display_name: "Fixture ChatGPT", visibility: "list" },
+			{ slug: "gpt-5.6-luna", display_name: "GPT-5.6 Luna", visibility: "list" },
+			{ slug: "gpt-6-luna", display_name: "GPT-6 Luna", visibility: "list" },
+			{ slug: "gpt-6-astra", display_name: "GPT-6 Astra", visibility: "list" },
+			{ slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol", visibility: "list" },
+			...extraChatGPTModels,
+		],
+	});
 };
 const copilot = githubCopilotProvider().getModels()[0]!;
-const credentials = (id: string): OAuthCredential => ({ type: "oauth", access: id === "xai" ? "fixture-xai-access" : "tid=fixture;proxy-ep=proxy.individual.githubcopilot.com;", refresh: "fixture-refresh", expires: Date.now() + 3600000, ...(id === "github-copilot" ? { availableModelIds: [copilot.id] } : {}) });
+const credentials = (id: string): OAuthCredential => ({ type: "oauth", access: id === "xai" ? "fixture-xai-access" : id === "openai-codex" ? "fixture-codex-access" : "tid=fixture;proxy-ep=proxy.individual.githubcopilot.com;", refresh: "fixture-refresh", expires: Date.now() + 3600000, ...(id === "github-copilot" ? { availableModelIds: [copilot.id] } : {}) });
 await fs.writeFile(path.join(directory, "chatgpt-credentials.json"), JSON.stringify({ version: 1, hostId: "fixture-host", allowBackgroundUse: true, activeId: "fixture-account", registrations: [{ id: "fixture-account", clientId: "oaiapp_fixture", issuer: "https://auth.openai.com", subject: "fixture-subject", email: "fixture@example.invalid", tokens: { accessToken: "fixture-chatgpt-access", refreshToken: "fixture-chatgpt-refresh", idToken: "fixture-id-token", scopes: SCOPES, expiresAt: Date.now() + 3600000 } }] }), { mode: 0o600 });
-for (const id of ["github-copilot", "xai"]) await fs.writeFile(path.join(directory, `${id}-credentials.json`), JSON.stringify({ version: 1, allowBackgroundUse: true, connectionId: "00000000-0000-4000-8000-000000000001", credential: credentials(id) }), { mode: 0o600 });
+for (const id of ["github-copilot", "xai", "openai-codex"]) await fs.writeFile(path.join(directory, `${id}-credentials.json`), JSON.stringify({ version: 1, allowBackgroundUse: true, connectionId: "00000000-0000-4000-8000-000000000001", credential: credentials(id) }), { mode: 0o600 });
 function request(command?: Record<string, unknown>, origin = "http://192.168.1.10:3000") {
 	return new Request(`${origin}/api/subscriptions`, { method: command ? "POST" : "GET", headers: { host: new URL(origin).host, origin, "sec-fetch-site": "same-origin", "x-learnharness-subscriptions": "1", "content-type": "application/json" }, ...(command ? { body: JSON.stringify(command) } : {}) });
 }
@@ -38,15 +49,48 @@ after(async () => { webSubscriptionOwner().close(); globalThis.fetch = originalF
 
 test("ordinary web restores configured sibling credentials, private runtime leases work for LAN-owned requests", async () => {
 	await refreshConnectionCatalog();
-	assert(chat.chatGPTConnected()); assert(native.nativeSubscriptionConnected("github-copilot")); assert(native.nativeSubscriptionConnected("xai"));
+	assert(chat.chatGPTConnected()); assert(native.nativeSubscriptionConnected("github-copilot")); assert(native.nativeSubscriptionConnected("xai")); assert(native.nativeSubscriptionConnected("openai-codex"));
 	assert.equal((await chat.chatGPTLease(chat.chatGPTScope(model.id), false)).accessToken, "fixture-chatgpt-access");
 	const xaiModel = native.nativeSubscriptionModels().find((entry) => entry.provider === "xai-subscription")!;
 	assert.equal((await native.subscriptionLease(native.subscriptionScope("xai", xaiModel.id), false)).apiKey, "fixture-xai-access");
 	const response = await subscriptionControlsResponse(request());
 	assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store");
 	const publicState = await response.text();
-	for (const secret of ["fixture-chatgpt-access", "fixture-chatgpt-refresh", "fixture-id-token", "fixture-xai-access", "fixture-refresh"]) assert(!publicState.includes(secret));
+	for (const secret of ["fixture-chatgpt-access", "fixture-chatgpt-refresh", "fixture-id-token", "fixture-xai-access", "fixture-codex-access", "fixture-refresh"]) assert(!publicState.includes(secret));
 	assert(publicState.includes("fixture@example.invalid"));
+});
+
+test("openai-codex-subscription exposes Luna/Astra models and chatgpt catalog deduplicates overlapping models preferring openai", async () => {
+	await refreshConnectionCatalog();
+	const codexModels = native.nativeSubscriptionModels().filter((entry) => entry.provider === "openai-codex-subscription");
+	for (const id of ["gpt-5.6-luna", "gpt-6-luna", "gpt-6-astra"]) {
+		assert(codexModels.some((entry) => entry.id === id), `expected ${id} in openai-codex-subscription catalog`);
+		assert.equal((await native.subscriptionLease(native.subscriptionScope("openai-codex", id), false)).apiKey, "fixture-codex-access");
+	}
+	const supported = chatGPTSupportedModels();
+	assert.equal(new Set(supported.map((entry) => entry.id)).size, supported.length, "chatgpt supported list is deduplicated by id");
+	const catalog = modelCatalog();
+	for (const id of ["gpt-5.6-luna", "gpt-6-luna", "gpt-6-astra"]) {
+		assert(catalog.models.some((entry) => entry.provider === "openai-codex-subscription" && entry.id === id), `expected ${id} in picker catalog for openai-codex-subscription`);
+		assert.equal(catalog.models.filter((entry) => entry.provider === "chatgpt" && entry.id === id).length, 1, `expected single chatgpt entry for ${id}`);
+	}
+	assert.equal(chat.chatGPTModels().find((entry) => entry.id === "gpt-6.1-sol")?.contextWindow, 272000, "overlapping models prefer openai metadata over openai-codex");
+	assert.deepEqual(catalog.models.find((entry) => entry.provider === "chatgpt" && entry.id === "gpt-5.6-luna")?.supportedLevels, ["off", "low", "medium", "high", "xhigh", "max"]);
+	const codexProvider = piModels().getProvider("openai-codex")!;
+	const codexOnlyModel = { ...codexProvider.getModels().find((entry) => entry.id === "gpt-6-astra")!, id: "gpt-codex-only-fixture", name: "Codex Only Fixture" };
+	piModels().setProvider({ ...codexProvider, getModels: () => [...codexProvider.getModels(), codexOnlyModel] });
+	extraChatGPTModels = [{ slug: "gpt-codex-only-fixture", display_name: "Codex Only Fixture", visibility: "list" }];
+	try {
+		const fallbackEntry = chatGPTSupportedModels().find((entry) => entry.id === "gpt-codex-only-fixture");
+		assert.equal(fallbackEntry?.api, "openai-responses");
+		assert.equal(fallbackEntry?.baseUrl, "https://api.openai.com/v1");
+		await refreshConnectionCatalog("chatgpt");
+		assert(chat.chatGPTModels().some((entry) => entry.id === "gpt-codex-only-fixture"));
+	} finally {
+		piModels().setProvider(codexProvider);
+		extraChatGPTModels = [];
+		await refreshConnectionCatalog("chatgpt");
+	}
 });
 
 test("web background OFF immediately aborts background streams, retains foreground and rejects private background leases", async () => {
@@ -90,10 +134,10 @@ test("HTTP controls reject cross-origin, simple-form and private credential oper
 
 function fakeSDK(login: (id: string, interaction: ProviderAuthInteraction) => Promise<OAuthCredential>) {
 	const factory = (id: string) => {
-		const provider = id === "xai" ? xaiProvider() : githubCopilotProvider();
+		const provider = id === "xai" ? xaiProvider() : id === "github-copilot" ? githubCopilotProvider() : openaiCodexProvider();
 		return { ...provider, auth: { oauth: { ...provider.auth.oauth!, login: (interaction: ProviderAuthInteraction) => login(id, interaction), refresh: async () => credentials(id) } } };
 	};
-	return { createModels, githubCopilotProvider: () => factory("github-copilot"), xaiProvider: () => factory("xai") };
+	return { createModels, githubCopilotProvider: () => factory("github-copilot"), xaiProvider: () => factory("xai"), openaiCodexProvider: () => factory("openai-codex") };
 }
 test("device browser actions preserve complete URLs privately, are origin-bound, one-use and cancellation-bound", async () => {
 	const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "lh-web-action-"));

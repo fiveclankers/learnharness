@@ -12,17 +12,24 @@ Object.assign(globalThis, { window: dom.window, document: dom.document, Element:
 const originalFetch = globalThis.fetch;
 let root: Root | undefined;
 let host: HTMLElement | undefined;
-async function mount(setup = false) {
+const FIXTURE = { id: "custom", label: "Fixture endpoint", baseUrl: "http://fixture.invalid/v1", authMode: "keyless", keySource: "none", keyPresent: false, keyReuseRequired: false, models: [{ id: "fixture-model" }], overrides: {}, manualModels: [] };
+let mountedProviders = [FIXTURE];
+async function mount(setup = false, providers = mountedProviders) {
 	globalThis.fetch = async (input, init) => {
 		assert.equal(init?.method ?? "GET", "GET", "polish interactions must not save credentials/settings");
-		if (String(input).startsWith("/api/custom-provider")) return Response.json({ baseUrl: "http://fixture.invalid/v1", authMode: "keyless", keySource: "none", keyPresent: false, keyReuseRequired: false, models: [{ id: "fixture-model" }], overrides: {}, manualModels: [] }, { headers: { etag: '"fixture"' } });
+		if (String(input).startsWith("/api/custom-provider")) return Response.json({ providers }, { headers: { etag: '"fixture"' } });
 		return Response.json({ keys: [], providers: [] });
 	};
 	host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
 	await act(async () => root!.render(<InteractionLayersProvider>{setup ? <CustomEndpointSetup onSaved={() => assert.fail("unexpected save")} /> : <KeysSection />}</InteractionLayersProvider>));
 	if (!setup) await click("custom-endpoint-row-btn");
 }
-function element(id: string) { const node = document.querySelector<HTMLElement>(`[data-testid="${id}"]`); assert.ok(node, id); return node; }
+function element(id: string) {
+	const nodes = Array.from(document.querySelectorAll<HTMLElement>(`[data-testid="${id}"]`));
+	const node = nodes.find((n) => !n.closest("[hidden]")) ?? nodes[0];
+	assert.ok(node, id);
+	return node;
+}
 async function click(id: string) { await act(async () => element(id).dispatchEvent(new dom.window.Event("click", { bubbles: true }))); }
 async function selectMode(value: string) {
 	const select = element("custom-auth-mode");
@@ -39,6 +46,40 @@ for (const setup of [false, true]) {
 		assert.ok(element("custom-save"));
 	});
 }
+test("renders one labelled row per configured endpoint, edits the chosen one, and supports 1-click inline Refresh", async () => {
+	mountedProviders = [
+		FIXTURE,
+		{ id: "custom-0123456789ab", label: "Local GPU", baseUrl: "http://local.invalid/v1", authMode: "keyless", keySource: "none", keyPresent: false, keyReuseRequired: false, models: [{ id: "local-model" }], overrides: {}, manualModels: [] },
+	];
+	try {
+		await mount();
+		const rows = document.querySelectorAll<HTMLElement>('[data-testid="custom-endpoint-row-btn"]');
+		assert.equal(rows.length, 2);
+		assert.ok(rows[0]!.textContent?.includes("Fixture endpoint"));
+		assert.ok(rows[1]!.textContent?.includes("Local GPU"));
+		await act(async () => rows[1]!.dispatchEvent(new dom.window.Event("click", { bubbles: true })));
+		assert.equal((element("custom-label-input") as HTMLInputElement).value, "Local GPU");
+		assert.equal((element("custom-baseurl-input") as HTMLInputElement).value, "http://local.invalid/v1");
+		assert.ok(element("custom-refresh"));
+
+		let refreshedBody: Record<string, unknown> | undefined;
+		globalThis.fetch = async (input, init) => {
+			if (String(input).startsWith("/api/custom-provider") && init?.method === "POST") {
+				refreshedBody = JSON.parse(String(init.body));
+				return Response.json({ ok: true, provider: { id: "custom-0123456789ab", label: "Local GPU", models: [{ id: "local-model" }, { id: "new-model" }] } }, { headers: { etag: '"fixture-2"' } });
+			}
+			if (String(input).startsWith("/api/custom-provider")) {
+				return Response.json({ providers: mountedProviders }, { headers: { etag: '"fixture-2"' } });
+			}
+			return Response.json({ keys: [], providers: [] });
+		};
+		await click("custom-refresh-custom-0123456789ab");
+		assert.equal(refreshedBody?.id, "custom-0123456789ab");
+		assert.equal(refreshedBody?.baseUrl, "http://local.invalid/v1");
+	} finally {
+		mountedProviders = [FIXTURE];
+	}
+});
 test("model controls use approved effort labels, right-align Save limits, and group help below", async () => {
 	await mount();
 	const select = element("custom-pin-reasoning-fixture-model");

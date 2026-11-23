@@ -106,6 +106,22 @@ export function parseClaudeCodeSettingsBody(body: unknown): SettingsBodyResult<{
 	return { ok: true, settings: { enabled: raw.enabled } };
 }
 
+/** antigravity: explicit app-wide opt-in and background consent. */
+export function parseAntigravitySettingsBody(body: unknown): SettingsBodyResult<{ enabled?: boolean; allowBackgroundUse?: boolean }> {
+	const raw = asRecord(body);
+	if (!raw) return { ok: false, error: "Invalid JSON body" };
+	const settings: { enabled?: boolean; allowBackgroundUse?: boolean } = {};
+	if (raw.enabled !== undefined) {
+		if (typeof raw.enabled !== "boolean") return { ok: false, error: "enabled must be a boolean" };
+		settings.enabled = raw.enabled;
+	}
+	if (raw.allowBackgroundUse !== undefined) {
+		if (typeof raw.allowBackgroundUse !== "boolean") return { ok: false, error: "allowBackgroundUse must be a boolean" };
+		settings.allowBackgroundUse = raw.allowBackgroundUse;
+	}
+	return { ok: true, settings };
+}
+
 /** agent.models: only the six known background roles; each override's
  *  fields mirror ChatSettings (model pair + independent thinkingLevel). */
 function parseRoleOverride(value: unknown, role: string): { ok: true; override: RoleModelOverride } | { ok: false; error: string } {
@@ -499,6 +515,7 @@ export const SETTINGS_SECTIONS = {
 	models: parseModelsSettingsBody,
 	dictation: parseDictationSettingsBody,
 	claudeCode: parseClaudeCodeSettingsBody,
+	antigravity: parseAntigravitySettingsBody,
 } as const;
 
 export type SettingsSectionName = keyof typeof SETTINGS_SECTIONS;

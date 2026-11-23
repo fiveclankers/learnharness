@@ -1,3 +1,5 @@
+import { ANTIGRAVITY_PROVIDER } from "./antigravity-acp/constants.ts";
+import { antigravityBackgroundAllowed, onAntigravityChange } from "./antigravity-acp/state.ts";
 import { chatGPTBackgroundAllowed, chatGPTConnected, chatGPTScopeCurrent, onChatGPTChange } from "./chatgpt-bridge.ts";
 import { nativeSubscriptionId, nativeSubscriptionConnected, nativeSubscriptionBackgroundAllowed, nativeAdmissionCurrent, onNativeSubscriptionChange } from "./subscription-bridge.ts";
 import type { AdmissionScope } from "./subscription-request-cycle.ts";
@@ -9,6 +11,7 @@ export function subscriptionConnected(provider: string): boolean {
 }
 /** Ordinary API connections have no subscription background-consent gate. */
 export function connectionBackgroundAllowed(provider: string | undefined): boolean {
+	if (provider === ANTIGRAVITY_PROVIDER) return antigravityBackgroundAllowed();
 	if (provider === "chatgpt") return chatGPTBackgroundAllowed();
 	const native = provider ? nativeSubscriptionId(provider) : undefined;
 	return native ? nativeSubscriptionBackgroundAllowed(native) : true;
@@ -18,6 +21,8 @@ export function connectionScopeCurrent(provider: string, scope: AdmissionScope):
 	const native = nativeSubscriptionId(provider); return !!native && nativeAdmissionCurrent(native, scope);
 }
 export function onSubscriptionChange(listener: () => void): () => void {
-	const stopChatGPT = onChatGPTChange(listener), stopNative = onNativeSubscriptionChange(listener);
-	return () => { stopChatGPT(); stopNative(); };
+	const stopChatGPT = onChatGPTChange(listener);
+	const stopNative = onNativeSubscriptionChange(listener);
+	const stopAntigravity = onAntigravityChange(listener);
+	return () => { stopChatGPT(); stopNative(); stopAntigravity(); };
 }

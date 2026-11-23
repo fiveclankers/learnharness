@@ -15,6 +15,9 @@ import { themeStore } from "../store/themes.ts";
 import { resolveSettings, type EffectiveSettings } from "../core/settings-resolution.ts";
 import { syncCustomProvider } from "./custom-provider.ts";
 import { configureWorkerRequestAdmission } from "../agent/worker-request-admission.ts";
+import { configureAntigravityPreferences, notifyAntigravityPolicyChange } from "../agent/antigravity-acp/state.ts";
+import { configureAppHeldEnvVars } from "../agent/antigravity-acp/env.ts";
+import { authStore } from "../store/auth.ts";
 /** The wired adapters. Satisfies core/graph.ts's GraphDeps structurally. */
 export const stores = {
 	chatStore,
@@ -41,6 +44,12 @@ export function effectiveSettings(): EffectiveSettings {
 
 // Runtime policy is supplied at the composition root, never imported by agents.
 configureWorkerRequestAdmission(() => effectiveSettings().agent.workerRequestConcurrency);
+configureAppHeldEnvVars(() => Object.keys(authStore.authVars()));
+configureAntigravityPreferences(() => {
+	const raw = settingsStore.readSettings()?.antigravity;
+	return { enabled: raw?.enabled === true, allowBackgroundUse: raw?.allowBackgroundUse !== false };
+});
+notifyAntigravityPolicyChange();
 
 // Boot: register the custom endpoint (when configured) into piModels(); the
 // POST /api/custom-provider route re-syncs after every connect.

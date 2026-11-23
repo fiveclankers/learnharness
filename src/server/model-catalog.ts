@@ -22,17 +22,42 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { piModels } from "../agent/models.ts";
 import { customProviderAvailable } from "./custom-provider.ts";
 import { chatGPTConnected, chatGPTModel, chatGPTModels, refreshChatGPTModels } from "../agent/chatgpt-bridge.ts";
+import { ANTIGRAVITY_PROVIDER } from "../core/contracts/antigravity.ts";
+import { antigravityAvailable, antigravityModel, antigravityModels, refreshAntigravity } from "../agent/antigravity-acp/state.ts";
 import { NATIVE_SUBSCRIPTIONS } from "../core/contracts/subscriptions.ts";
 import { nativeSubscriptionId, nativeSubscriptionConnected, nativeSubscriptionModel, nativeSubscriptionModels, refreshSubscriptionModels } from "../agent/subscription-bridge.ts";
 
+export function chatGPTSupportedModels(): Model<"openai-responses">[] {
+	const models = piModels();
+	const seen = new Set<string>();
+	const supported: Model<"openai-responses">[] = [];
+	for (const m of models.getModels("openai").filter((m): m is Model<"openai-responses"> => m.api === "openai-responses")) {
+		if (seen.has(m.id)) continue;
+		seen.add(m.id);
+		supported.push(m);
+	}
+	for (const m of models.getModels("openai-codex").filter((m): m is Model<"openai-codex-responses"> => m.api === "openai-codex-responses")) {
+		if (seen.has(m.id)) continue;
+		seen.add(m.id);
+		supported.push({
+			...m,
+			api: "openai-responses" as const,
+			baseUrl: "https://api.openai.com/v1",
+		});
+	}
+	return supported;
+}
+
 export async function refreshConnectionCatalog(provider?: string): Promise<void> {
 	await Promise.all([
-		!provider || provider === "chatgpt" ? refreshChatGPTModels(piModels().getModels("openai").filter((m): m is Model<"openai-responses"> => m.api === "openai-responses")) : Promise.resolve(),
+		!provider || provider === "chatgpt" ? refreshChatGPTModels(chatGPTSupportedModels()) : Promise.resolve(),
 		!provider || nativeSubscriptionId(provider) ? refreshSubscriptionModels() : Promise.resolve(),
+		!provider || provider === ANTIGRAVITY_PROVIDER ? refreshAntigravity(false) : Promise.resolve(),
 	]);
 }
 function connectionModel(provider: string, id: string): Model<Api> | undefined {
 	if (provider === CLAUDE_CODE_PROVIDER && !claudeCodeAvailable()) return undefined;
+	if (provider === ANTIGRAVITY_PROVIDER) return antigravityAvailable() ? antigravityModel(id) : undefined;
 	return provider === "chatgpt" ? chatGPTModel(id) : nativeSubscriptionId(provider) ? nativeSubscriptionModel(provider, id) : piModels().getModel(provider, id);
 }
 function connectionProviderIds(): string[] { return [...piModels().getProviders().map((p) => p.id), "chatgpt", ...NATIVE_SUBSCRIPTIONS.map((p) => p.logicalId)]; }
@@ -49,7 +74,7 @@ import type {
 	SlotPins,
 } from "../core/contracts/models.ts";
 import type { EffectiveModelSpec, EffectiveSlot } from "../core/settings-resolution.ts";
-import { AUTH_PROVIDER_KEYS, CUSTOM_PROVIDER } from "../core/auth-keys.ts";
+import { AUTH_PROVIDER_KEYS, CUSTOM_PROVIDER, isCustomProviderId } from "../core/auth-keys.ts";
 import { claudeCodeAvailable } from "./claude-code-config.ts";
 import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
 import {
@@ -155,12 +180,17 @@ export function catalogProviders(): CatalogProvider[] {
 	})).concat([
 		{ id: "chatgpt", envVar: "", keyPresent: chatGPTConnected() },
 		{ id: CLAUDE_CODE_PROVIDER, envVar: "", keyPresent: claudeCodeAvailable() },
+		{ id: ANTIGRAVITY_PROVIDER, envVar: "", keyPresent: antigravityAvailable() },
 		...NATIVE_SUBSCRIPTIONS.map((p) => ({ id: p.logicalId, envVar: "", keyPresent: nativeSubscriptionConnected(p.providerId) })),
-		// The custom endpoint: a row only when usable (base URL set). keyPresent
+		// Custom endpoints: a row only when usable (base URL set). keyPresent
 		// reflects usability, not key presence (keyless local servers are allowed).
-		...(customProviderUsable(effectiveSettings().customProvider)
-			? [{ id: CUSTOM_PROVIDER.id, envVar: CUSTOM_PROVIDER.envVar, keyPresent: customProviderAvailable() }]
-			: []),
+		...effectiveSettings().customProviders
+			.filter(customProviderUsable)
+			.map((cp) => ({
+				id: cp.id,
+				envVar: cp.id === CUSTOM_PROVIDER.id ? CUSTOM_PROVIDER.envVar : "",
+				keyPresent: customProviderAvailable(cp.id),
+			})),
 	]).sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -172,15 +202,16 @@ function keyedProviderIds(): Set<string> {
 }
 
 /** Project one catalog model to the client DTO. */
-export function toModelDto(model: Model<Api>): ModelDto {
+export function toModelDto(model: Model<Api>, providerName?: string): ModelDto {
 	return {
 		id: model.id,
 		name: model.name,
 		provider: model.provider,
+		...(providerName ? { providerName } : {}),
 		reasoning: model.reasoning,
 		input: [...model.input],
 		supportedLevels: getSupportedThinkingLevels(model),
-		cost: model.provider === CLAUDE_CODE_PROVIDER || model.provider === CUSTOM_PROVIDER.id ? null : {
+		cost: model.provider === CLAUDE_CODE_PROVIDER || model.provider === ANTIGRAVITY_PROVIDER || isCustomProviderId(model.provider) ? null : {
 			input: model.cost.input,
 			output: model.cost.output,
 			cacheRead: model.cost.cacheRead,
@@ -208,7 +239,7 @@ export function catalogContextLimits(): Map<string, number> {
 			index.set(`${provider.id}:${model.id}`, model.contextWindow);
 		}
 	}
-	for (const model of [...chatGPTModels(), ...nativeSubscriptionModels()]) index.set(`${model.provider}:${model.id}`, model.contextWindow);
+	for (const model of [...chatGPTModels(), ...nativeSubscriptionModels(), ...antigravityModels()]) index.set(`${model.provider}:${model.id}`, model.contextWindow);
 	return index;
 }
 
@@ -218,13 +249,11 @@ export function catalogContextLimits(): Map<string, number> {
  *  pins (the settings UI's per-role default captions). */
 export function modelCatalog(): ModelCatalogResponse {
 	const keyed = keyedProviderIds();
-	const models = piModels()
-		.getProviders()
-		.filter((p) => keyed.has(p.id))
-		.flatMap((p) => piModels().getModels(p.id))
-		.map(toModelDto)
+	const providers = piModels().getProviders().filter((p) => keyed.has(p.id));
+	const models = providers
+		.flatMap((p) => piModels().getModels(p.id).map((m) => toModelDto(m, isCustomProviderId(p.id) ? p.name : undefined)))
 		.sort((a, b) => (a.provider === b.provider ? a.id.localeCompare(b.id) : a.provider.localeCompare(b.provider)))
-		.concat([...chatGPTModels(), ...nativeSubscriptionModels()].map(toModelDto));
+		.concat([...chatGPTModels(), ...nativeSubscriptionModels(), ...antigravityModels()].map((m) => toModelDto(m)));
 	return {
 		models,
 		defaults: catalogDefaults(),

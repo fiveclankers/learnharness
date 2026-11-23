@@ -30,7 +30,7 @@
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CacheRetention } from "@earendil-works/pi-ai";
-import { AUTH_PROVIDER_KEYS } from "./auth-keys.ts";
+import { AUTH_PROVIDER_KEYS, isCustomProviderId } from "./auth-keys.ts";
 import { CLAUDE_CODE_PROVIDER } from "./contracts/claude-code.ts";
 import type { ModelRole } from "../../config.ts";
 import type { ChatSettings } from "./contracts/chat.ts";
@@ -166,10 +166,15 @@ export interface ProviderKeyMissing {
  * (the label prefix varies by provider). */
 const PROVIDER_KEY_MISSING_TAIL = "key is set — add one in Settings → Keys";
 const CLAUDE_CODE_UNAVAILABLE = "Claude Code is unavailable. Enable and set it up in Settings → Providers.";
+const ANTIGRAVITY_UNAVAILABLE = "Antigravity ACP is unavailable. Enable and set it up in Settings → Providers.";
 export function providerKeyMissing(provider: string, slots: ModelSlotName[]): ProviderKeyMissing {
 	const label = AUTH_PROVIDER_KEYS.find((p) => p.id === provider)?.label ?? provider;
 	return {
-		error: provider === CLAUDE_CODE_PROVIDER ? CLAUDE_CODE_UNAVAILABLE : `No ${label} ${PROVIDER_KEY_MISSING_TAIL}`,
+		error: provider === CLAUDE_CODE_PROVIDER
+			? CLAUDE_CODE_UNAVAILABLE
+			: provider === "antigravity"
+				? ANTIGRAVITY_UNAVAILABLE
+				: `No ${label} ${PROVIDER_KEY_MISSING_TAIL}`,
 		code: PROVIDER_KEY_MISSING_CODE,
 		provider,
 		slots,
@@ -180,7 +185,7 @@ export function providerKeyMissing(provider: string, slots: ModelSlotName[]): Pr
  * scary-error) — the envelope's home module owns the string so the
  * writer and the matcher can never drift. */
 export function isProviderKeyRefusal(error: string | undefined): boolean {
-	return !!error && (error.endsWith(PROVIDER_KEY_MISSING_TAIL) || error === CLAUDE_CODE_UNAVAILABLE);
+	return !!error && (error.endsWith(PROVIDER_KEY_MISSING_TAIL) || error === CLAUDE_CODE_UNAVAILABLE || error === ANTIGRAVITY_UNAVAILABLE);
 }
 /** The typed throw for in-process seams (extraction pipeline) — the
  * ProviderKeyMissing sibling of ModelsNotConfiguredError: callers catch
@@ -262,6 +267,10 @@ export interface CustomModelOverride {
 
 /** The single custom endpoint's stored config (delta section). */
 export interface CustomProviderSettings {
+	/** Stable provider id: "custom" for the legacy endpoint, else "custom-<12 hex>". */
+	id?: string;
+	/** User-facing endpoint label (default "Custom endpoint"). */
+	label?: string;
 	/** Server-owned random authorization nonce; never a credential hash. */
 	credentialBindingId?: string;
 	/** Explicit authentication intent; never inferred from a saved key. */
@@ -496,11 +505,14 @@ export interface UserSettings {
 	dictation?: DictationSettings;
 	/** Explicit app-wide opt-in; absent/invalid is off, including older records. */
 	claudeCode?: { enabled?: boolean };
+	/** Explicit app-wide Antigravity ACP settings; enabled defaults off, allowBackgroundUse defaults on. */
+	antigravity?: { enabled?: boolean; allowBackgroundUse?: boolean };
 	agent?: AgentSettings;
 	/** The strong/cheap/vision model slots (model slots wave, 2026-09-20). */
 	models?: ModelsSettings;
-	/** The custom OpenAI-compatible endpoint (non-secret config only). */
-	customProvider?: CustomProviderSettings;
+	/** Custom OpenAI-compatible endpoints (non-secret config only). Legacy
+	 *  singular `customProvider` is folded into this array on read. */
+	customProviders?: CustomProviderSettings[];
 	appearance?: AppearanceSettings;
 	graph?: GraphSettings;
 	compaction?: CompactionSettings;
@@ -678,8 +690,16 @@ export function sanitizeCustomModelOverrides(
 /** The customProvider section: normalized base URL (invalid → dropped) and
  *  discovered models (ids trimmed, dupes/empties dropped; image kept only when
  *  true; token counts only as positive ints). Clamp-never-reject. */
-function sanitizeCustomProvider(raw: Record<string, unknown>): CustomProviderSettings {
+export const CUSTOM_PROVIDER_LABEL_MAX = 60;
+
+function sanitizeCustomProvider(raw: Record<string, unknown>, fallbackId?: string): CustomProviderSettings {
 	const out: CustomProviderSettings = {};
+	const id = typeof raw.id === "string" && isCustomProviderId(raw.id) ? raw.id : fallbackId;
+	if (id) out.id = id;
+	if (typeof raw.label === "string") {
+		const label = raw.label.trim().slice(0, CUSTOM_PROVIDER_LABEL_MAX);
+		if (label) out.label = label;
+	}
 	if (typeof raw.credentialBindingId === "string" && /^[a-f0-9]{32}$/.test(raw.credentialBindingId)) out.credentialBindingId = raw.credentialBindingId;
 	if (raw.authMode === "keyless" || raw.authMode === "apiKey") out.authMode = raw.authMode;
 	if (typeof raw.baseUrl === "string") {
@@ -878,6 +898,18 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 			&& typeof (raw as Record<string, unknown>).enabled === "boolean"
 			? { enabled: (raw as { enabled: boolean }).enabled } : {};
 	}
+	if (r.antigravity !== undefined) {
+		const raw = r.antigravity;
+		if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+			const ag = raw as Record<string, unknown>;
+			out.antigravity = {
+				...(typeof ag.enabled === "boolean" ? { enabled: ag.enabled } : {}),
+				...(typeof ag.allowBackgroundUse === "boolean" ? { allowBackgroundUse: ag.allowBackgroundUse } : {}),
+			};
+		} else {
+			out.antigravity = {};
+		}
+	}
 	if (r.agent !== null && typeof r.agent === "object" && !Array.isArray(r.agent)) {
 		out.agent = sanitizeAgent(r.agent as Record<string, unknown>);
 	}
@@ -888,8 +920,22 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 		const models = sanitizeModels(r.models as Record<string, unknown>);
 		if (Object.keys(models).length) out.models = models;
 	}
-	if (r.customProvider !== null && typeof r.customProvider === "object" && !Array.isArray(r.customProvider)) {
-		out.customProvider = sanitizeCustomProvider(r.customProvider as Record<string, unknown>);
+	if (Array.isArray(r.customProviders) || (r.customProvider !== null && typeof r.customProvider === "object" && !Array.isArray(r.customProvider))) {
+		const entries = Array.isArray(r.customProviders)
+			? r.customProviders
+			: [r.customProvider];
+		const seen = new Set<string>();
+		const customProviders: CustomProviderSettings[] = [];
+		for (const entry of entries) {
+			if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+			const cp = sanitizeCustomProvider(entry as Record<string, unknown>, "custom");
+			const id = cp.id ?? "custom";
+			if (seen.has(id)) continue;
+			seen.add(id);
+			if (!cp.baseUrl && !cp.models?.length && !cp.manualModels?.length) continue;
+			customProviders.push({ ...cp, id });
+		}
+		if (customProviders.length) out.customProviders = customProviders;
 	}
 	if (r.graph !== null && typeof r.graph === "object" && !Array.isArray(r.graph)) {
 		out.graph = sanitizeGraph(r.graph as Record<string, unknown>);
@@ -903,7 +949,7 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 	// 2026-09-28) — a fossil copy on disk must never resurrect through
 	// reads (and any later write flushes it from the file for good).
 	for (const [key, value] of Object.entries(r)) {
-		if (key === "chat") continue;
+		if (key === "chat" || key === "customProvider") continue;
 		if (!(key in out)) out[key] = value;
 	}
 	return out;

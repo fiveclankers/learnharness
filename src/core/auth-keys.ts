@@ -153,6 +153,17 @@ export const CUSTOM_PROVIDER = {
 	label: "Custom endpoint",
 } as const;
 
+export const CUSTOM_PROVIDER_ID_PREFIX = "custom-";
+const CUSTOM_PROVIDER_EXTRA_ID = /^custom-[a-f0-9]{12}$/;
+
+export function isCustomProviderId(id: string): boolean {
+	return id === CUSTOM_PROVIDER.id || CUSTOM_PROVIDER_EXTRA_ID.test(id);
+}
+
+export function customProviderLabel(provider: { label?: string } | undefined): string {
+	return provider?.label?.trim() || CUSTOM_PROVIDER.label;
+}
+
 /** Every distinct env var a model-provider key rides in (the write side's
  *  writability check — see isProviderEnvVar below; also drives which
  *  PRESENT provider vars surface as status rows). */

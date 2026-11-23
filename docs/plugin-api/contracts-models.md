@@ -116,6 +116,7 @@ units as Pi's server-side pricing calculator).
 
 ```ts
 export interface ModelCatalogEntry {
+    providerName?: string;
     id: string;
     name: string;
     provider: string;
@@ -135,6 +136,7 @@ export interface ModelCatalogEntry {
 
 **Member index** (including nested object members; inherited members are defined in the linked base types):
 
+- [providerName](#modelcatalogentry-providername)
 - [id](#modelcatalogentry-id)
 - [name](#modelcatalogentry-name)
 - [provider](#modelcatalogentry-provider)
@@ -148,6 +150,14 @@ export interface ModelCatalogEntry {
 - [cost.cacheWrite](#modelcatalogentry-costcachewrite)
 - [contextWindow](#modelcatalogentry-contextwindow)
 - [maxTokens](#modelcatalogentry-maxtokens)
+
+### ModelCatalogEntry providerName
+
+Human label of the provider (e.g. user-named custom endpoint).
+
+```ts
+providerName?: string;
+```
 
 ### ModelCatalogEntry id
 

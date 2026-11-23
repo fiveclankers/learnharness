@@ -20,6 +20,10 @@ import { chatGPTStream } from "./chatgpt-stream.ts";
 import type { ChatGPTDispatchLifecycle } from "./chatgpt-request-cycle.ts";
 import { createClaudeCodeProvider } from "./claude-code/provider.ts";
 import { streamClaudeCode } from "./claude-code/stream.ts";
+import { ANTIGRAVITY_PROVIDER } from "./antigravity-acp/constants.ts";
+import { createAntigravityProvider } from "./antigravity-acp/provider.ts";
+import { antigravityModel } from "./antigravity-acp/state.ts";
+import { streamAntigravity } from "./antigravity-acp/stream.ts";
 import { nativeSubscriptionId, nativeSubscriptionModel } from "./subscription-bridge.ts";
 import { nativeSubscriptionStream } from "./subscription-stream.ts";
 
@@ -92,6 +96,7 @@ export function piModels() {
 				: provider);
 		}
 		collection.setProvider(createClaudeCodeProvider(streamClaudeCode));
+		collection.setProvider(createAntigravityProvider(streamAntigravity(() => true)));
 	}
 	providerSource?.sync(collection);
 	return collection;
@@ -132,7 +137,13 @@ function defaultThinkingLevel(model: Model<Api>): ThinkingLevel {
 export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (() => boolean) = true, lifecycle?: ChatGPTDispatchLifecycle, cacheRetention?: () => CacheRetention | undefined): PiEngine {
 	const models: Models = piModels();
 	const nativeId = nativeSubscriptionId(spec.provider);
-	const registeredModel = spec.provider === "chatgpt" ? chatGPTModel(spec.id) : nativeId ? nativeSubscriptionModel(spec.provider, spec.id) : models.getModel(spec.provider, spec.id);
+	const registeredModel = spec.provider === "chatgpt"
+		? chatGPTModel(spec.id)
+		: nativeId
+			? nativeSubscriptionModel(spec.provider, spec.id)
+			: spec.provider === ANTIGRAVITY_PROVIDER
+				? antigravityModel(spec.id)
+				: models.getModel(spec.provider, spec.id);
 	const custom = providerSource?.isCustom(spec.provider) ?? false;
 	// Custom endpoint owners authorize image attempts independently of sparse
 	// discovery metadata. Never promote the registered/catalog capabilities.
@@ -179,7 +190,13 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 				return current.streamSimple(permitImages(currentModel), context, { ...requestOptions, reasoning: currentLevel === "off" ? undefined : currentLevel });
 			}
 			const purpose = typeof background === "function" ? background : () => background;
-			const stream = spec.provider === "chatgpt" ? chatGPTStream(purpose, lifecycle) : nativeId ? nativeSubscriptionStream(models.getProvider(nativeId)!, purpose, lifecycle) : models.streamSimple.bind(models);
+			const stream = spec.provider === "chatgpt"
+				? chatGPTStream(purpose, lifecycle)
+				: nativeId
+					? nativeSubscriptionStream(models.getProvider(nativeId)!, purpose, lifecycle)
+					: spec.provider === ANTIGRAVITY_PROVIDER
+						? streamAntigravity(purpose)
+						: models.streamSimple.bind(models);
 			return stream(requestModel, context, requestOptions);
 		},
 	};

@@ -40,7 +40,7 @@ import { useEffect, useRef, useState } from "react";
 import { HostDialog } from "@/components/host-dialog";
 import { useInteractionLayers } from "@/components/interaction-layers";
 import type React from "react";
-import { type ModelCatalogEntry, type ModelSlotName, type ModelsSettings, CUSTOM_PROVIDER } from "@/src/core";
+import { type ModelCatalogEntry, type ModelSlotName, type ModelsSettings, CUSTOM_PROVIDER, isCustomProviderId } from "@/src/core";
 import { prettyModel } from "@/components/usage-format";
 import { ModelMenuList } from "@/components/settings/model-menu";
 import { MenuShell } from "@/components/menu-shell";
@@ -52,6 +52,7 @@ import { type ProviderKeyInfo, CUSTOM_PROVIDER_INFO, CustomEndpointSetup } from 
 import { ProviderMenuList } from "@/components/settings/model-menu";
 import { ChatGPTBackgroundAccess } from "@/components/settings/chatgpt-connection";
 import { NativeSubscriptionBackgroundAccess, SubscriptionConnections } from "@/components/settings/subscription-connections";
+import { AntigravityBackgroundAccess, AntigravityConnection } from "@/components/settings/antigravity-connection";
 import { defaultOrderLevel, populateLevel, THINKING_LABEL } from "@/components/thinking-default";
 import { ThinkingMenuList } from "@/components/settings/model-menu";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -228,9 +229,33 @@ export function SetupKeysBody({
 					</p>
 				)}
 			</div>
-			<div className="mt-2 border-t border-border/60 pt-4"><h3 className="mb-3 font-ui text-xs text-muted-foreground">Subscriptions</h3><SubscriptionConnections setup /></div>
+			<div className="mt-2 border-t border-border/60 pt-4">
+				<h3 className="mb-3 font-ui text-xs text-muted-foreground">Subscriptions</h3>
+				<SubscriptionConnections setup />
+				<SetupAntigravityTrigger />
+			</div>
 		</div>
 	);
+}
+
+function SetupAntigravityTrigger() {
+	const [open, setOpen] = useState(false);
+	if (!open) {
+		return (
+			<div className="mt-3 flex items-center justify-between gap-3 border-t border-border/50 pt-3" data-testid="setup-antigravity-trigger">
+				<span className="font-ui text-xs text-foreground">Antigravity (Google)</span>
+				<button
+					type="button"
+					onClick={() => setOpen(true)}
+					data-testid="setup-antigravity-open"
+					className="inline-flex h-7 items-center rounded-sm border border-border bg-background px-2.5 font-ui text-xs text-foreground transition-colors hover:border-muted-foreground/50"
+				>
+					Set up…
+				</button>
+			</div>
+		);
+	}
+	return <AntigravityConnection setup />;
 }
 
 function prefillLevels(body: ModelsBody | undefined): Partial<Record<ModelSlotName, ThinkingLevel>> {
@@ -422,7 +447,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 		error={keyError}
 		menuOpen={keyMenuOpen}
 		menuAnchor={keyTriggerRef}
-		isCustom={keyProvider?.id === CUSTOM_PROVIDER.id}
+		isCustom={isCustomProviderId(keyProvider?.id ?? "")}
 		onCustomSaved={() => { setKeyProvider(null); notifySettingsSaved("keys"); }}
 		onToggleMenu={() => setKeyMenuOpen((v) => !v)}
 		onCloseMenu={() => setKeyMenuOpen(false)}
@@ -473,7 +498,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 							const levelsForEntry = metadata?.supportedLevels ?? (entry ? Object.keys(THINKING_LABEL) : []);
 							const available = catalog?.models ?? (failed ? [] : undefined);
 							const slotCatalog = slot === "vision"
-								? available?.filter((m) => m.input.includes("image") || m.provider === CUSTOM_PROVIDER.id)
+								? available?.filter((m) => m.input.includes("image") || isCustomProviderId(m.provider))
 								: available;
 							return (
 								<div key={slot} data-testid={`setup-slot-${slot}`} className="flex flex-col gap-1.5">
@@ -489,7 +514,7 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 										)}
 									</span>
 									<span className="text-xs text-muted-foreground/70">{SLOT_META[slot].roster}</span>
-									{slot !== "strong" && <><ChatGPTBackgroundAccess provider={entry?.provider} /><NativeSubscriptionBackgroundAccess provider={entry?.provider} /></>}
+									{slot !== "strong" && <><ChatGPTBackgroundAccess provider={entry?.provider} /><NativeSubscriptionBackgroundAccess provider={entry?.provider} /><AntigravityBackgroundAccess provider={entry?.provider} /></>}
 									<div className="flex items-center gap-2">
 										<div className="relative flex-1">
 											<Hint label={entry ? `${entry.provider}:${entry.id}` : "Pick a model…"}>

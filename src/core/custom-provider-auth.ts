@@ -1,7 +1,28 @@
 /** Private custom credential authorization; no credential-derived public value. */
+import { CUSTOM_PROVIDER, isCustomProviderId } from "./auth-keys.ts";
 import { normalizeBaseUrl, type CustomProviderSettings } from "./settings.ts";
 
 export const CUSTOM_AUTH_BINDING = "__learnharness_custom_provider_binding";
+export const CUSTOM_CREDENTIAL_PREFIX = "__learnharness_custom_provider_key__";
+const CUSTOM_BINDING_PREFIX = `${CUSTOM_AUTH_BINDING}__`;
+
+export function customBindingAuthKey(id: string): string {
+	return id === CUSTOM_PROVIDER.id ? CUSTOM_AUTH_BINDING : `${CUSTOM_BINDING_PREFIX}${id}`;
+}
+
+export function customCredentialAuthKey(id: string): string {
+	return id === CUSTOM_PROVIDER.id ? CUSTOM_PROVIDER.envVar : `${CUSTOM_CREDENTIAL_PREFIX}${id}`;
+}
+
+export function isReservedCustomAuthKey(name: string): boolean {
+	return name === CUSTOM_AUTH_BINDING || name.startsWith(CUSTOM_BINDING_PREFIX)
+		|| name === CUSTOM_PROVIDER.envVar || name.startsWith(CUSTOM_CREDENTIAL_PREFIX);
+}
+
+export function customProviderId(provider: CustomProviderSettings | undefined): string {
+	return provider?.id && isCustomProviderId(provider.id) ? provider.id : CUSTOM_PROVIDER.id;
+}
+
 export interface CustomAuthBinding {
 	version: 1;
 	id: string;
